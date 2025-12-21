@@ -1,0 +1,7 @@
+
+    # --- G?i email: ch?n ngu?i nh?n b?ng checkbox và g?i ---
+    st.subheader("G?i email")
+
+    # Helper: find column by target key using normalized synonyms
+    def _find_col(df, target_key: str):
+        norm_map = {_normalize_text(c): c for c in df.columns}

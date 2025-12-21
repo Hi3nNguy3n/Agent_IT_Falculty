@@ -1,0 +1,15 @@
+    with st.sidebar:
+        st.subheader("G?i mail - C?u hình")
+        smtp_host = st.text_input("SMTP host", value=st.secrets.get("SMTP_HOST", "smtp.gmail.com") if hasattr(st, 'secrets') else "smtp.gmail.com")
+        smtp_port = st.number_input("SMTP port", value=int(st.secrets.get("SMTP_PORT", 587)) if hasattr(st, 'secrets') else 587, step=1)
+        smtp_user = st.text_input("SMTP user", value=st.secrets.get("SMTP_USER", "") if hasattr(st, 'secrets') else "")
+        smtp_pass = st.text_input("SMTP password", type="password", value=st.secrets.get("SMTP_PASS", "") if hasattr(st, 'secrets') else "")
+        mail_from = st.text_input("From (email)", value=st.secrets.get("MAIL_FROM", smtp_user) if hasattr(st, 'secrets') else smtp_user)
+        mail_subject = st.text_input("Tiêu d?", value="Thông báo l?ch gi?ng")
+        mail_body = st.text_area(
+            "N?i dung (có th? dùng {ten_gv}, {mon_hoc}, {lop})",
+            value=(st.secrets.get("MAIL_BODY", "Kính g?i {ten_gv},\n\n{mon_hoc} - {lop}.\n\nTrân tr?ng.") if hasattr(st, 'secrets') else "Kính g?i {ten_gv},\n\n{mon_hoc} - {lop}.\n\nTrân tr?ng."),
+            height=120,
+        )
+
+    # Email sending logic

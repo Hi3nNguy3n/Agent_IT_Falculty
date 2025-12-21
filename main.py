@@ -3,6 +3,7 @@ from datetime import datetime, time, timedelta
 import unicodedata
 import difflib
 import re
+import os
 
 import pandas as pd
 import streamlit as st
@@ -21,6 +22,81 @@ def _normalize_text(s: str) -> str:
     s = "".join(c for c in s if c.isalnum() or c.isspace())
     s = " ".join(s.split())
     return s
+
+
+def _get_secret(key: str, default=None):
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
+
+# Render only placeholders like {name} (letters/digits/underscore).
+# Ignores CSS braces like body { ... }.
+_PH_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _render_tpl(template: str, mapping: dict) -> str:
+    tpl = template or ""
+    def _repl(m: re.Match):
+        key = m.group(1)
+        val = mapping.get(key)
+        return "" if val is None else str(val)
+    try:
+        return _PH_RE.sub(_repl, tpl)
+    except Exception:
+        return tpl
+
+
+# -----------------------------
+# Gmail credential persistence
+# -----------------------------
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+GMAIL_TOKEN_FILE = os.path.join(".streamlit", "gmail_token.json")
+
+
+def _save_gmail_creds_to_file(creds) -> bool:
+    try:
+        os.makedirs(os.path.dirname(GMAIL_TOKEN_FILE), exist_ok=True)
+        # creds.to_json() returns a JSON string
+        with open(GMAIL_TOKEN_FILE, "w", encoding="utf-8") as f:
+            f.write(creds.to_json())
+        return True
+    except Exception:
+        return False
+
+
+def _clear_gmail_creds_file() -> bool:
+    try:
+        if os.path.exists(GMAIL_TOKEN_FILE):
+            os.remove(GMAIL_TOKEN_FILE)
+        return True
+    except Exception:
+        return False
+
+
+def _load_gmail_creds_from_file():
+    try:
+        if not os.path.exists(GMAIL_TOKEN_FILE):
+            return None
+        import json
+        from google.oauth2.credentials import Credentials
+        with open(GMAIL_TOKEN_FILE, "r", encoding="utf-8") as f:
+            data = f.read()
+        info = json.loads(data)
+        creds = Credentials.from_authorized_user_info(info, scopes=GMAIL_SCOPES)
+        # Refresh if needed
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                from google.auth.transport.requests import Request
+                creds.refresh(Request())
+                _save_gmail_creds_to_file(creds)
+            except Exception:
+                # If refresh fails, treat as missing
+                return None
+        return creds
+    except Exception:
+        return None
 
 
 TARGET_DISPLAY = {
@@ -106,6 +182,11 @@ SYNONYMS = {
         "o so ho",
     },
 }
+
+# Extend targets and synonyms for Email
+if "email" not in TARGET_DISPLAY:
+    TARGET_DISPLAY["email"] = "Email"
+SYNONYMS.setdefault("email", {"email", "e mail", "mail", "gmail", "thu dien tu"})
 
 
 def _find_column_mapping(df_columns):
@@ -317,6 +398,17 @@ def _is_campus_like(v) -> bool:
     return False
 
 
+def _is_email_like_value(v) -> bool:
+    if pd.isna(v):
+        return False
+    if isinstance(v, (datetime, time)):
+        return False
+    s = str(v).strip()
+    if not s:
+        return False
+    return re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", s) is not None
+
+
 def _is_textual(v) -> bool:
     if pd.isna(v):
         return False
@@ -364,6 +456,7 @@ def _auto_guess_columns(df: pd.DataFrame):
             "class": _ratio(col, _is_class_code_like),
             "room": _ratio(col, _is_room_like),
             "campus": _ratio(col, _is_campus_like),
+            "email": _ratio(col, _is_email_like_value),
             "text": _ratio(col, _is_textual),
             "blank_ratio": col.isna().mean() if len(col) else 0.0,
         }
@@ -440,6 +533,10 @@ def _auto_guess_columns(df: pd.DataFrame):
     s_teacher = [3.0 * features[i]["teacher"] + 1.5 * header_score(i, ["giang vien", "gv"]) for i in range(ncols)]
     idx_teacher = best_col(s_teacher)
 
+    # Email
+    s_email = [4.0 * features[i]["email"] + 1.5 * header_score(i, ["email", "e mail", "mail", "gmail"]) for i in range(ncols)]
+    idx_email = best_col(s_email)
+
     # Môn Học (ưu tiên text, không phải date/time, nhiều null vì merge)
     s_subject = []
     for i in range(ncols):
@@ -464,6 +561,7 @@ def _auto_guess_columns(df: pd.DataFrame):
     idx_nganh = best_col(s_nganh)
 
     mapping_pos = {
+        "Email": (idx_email + 1) if idx_email is not None else 0,
         "Môn Học": (idx_subject + 1) if idx_subject is not None else 0,
         "Lớp": (idx_class + 1) if idx_class is not None else 0,
         "Tên Giảng Viên": (idx_teacher + 1) if idx_teacher is not None else 0,
@@ -653,6 +751,16 @@ if df_raw is not None:
 
         df_sel = pd.DataFrame(data)[expected]
 
+    # Detect if teacher column was merged (blank rows under a header value)
+    teacher_was_merged = False
+    try:
+        teacher_label = TARGET_DISPLAY.get("ten giang vien")
+        if teacher_label in df_sel.columns:
+            s0 = df_sel[teacher_label]
+            teacher_was_merged = s0.isna().sum() > 0 and s0.notna().any()
+    except Exception:
+        teacher_was_merged = False
+
         # Apply Ngành filter if selected
         if nganh_pos and 1 <= int(nganh_pos) <= df_raw.shape[1]:
             key_series = df_raw.iloc[:, int(nganh_pos) - 1].ffill()
@@ -708,10 +816,24 @@ if df_raw is not None:
                 data[disp] = df_raw[src]
 
         df_sel = pd.DataFrame(data)[expected]
+    # Detect if teacher column was merged (blank rows) before ffill
+    teacher_was_merged = False
+    try:
+        teacher_label = TARGET_DISPLAY.get("ten giang vien")
+        if teacher_label in df_sel.columns:
+            s0 = df_sel[teacher_label]
+            teacher_was_merged = s0.isna().sum() > 0 and s0.notna().any()
+    except Exception:
+        teacher_was_merged = False
 
-    # Xử lý merge: Môn Học -> forward fill
+
+    # Xử lý merge: forward fill cho các cột bị merge dòng
     if "Môn Học" in df_sel.columns:
         df_sel["Môn Học"] = df_sel["Môn Học"].ffill()
+    if "Tên Giảng Viên" in df_sel.columns:
+        df_sel["Tên Giảng Viên"] = df_sel["Tên Giảng Viên"].ffill()
+    if "Email" in df_sel.columns:
+        df_sel["Email"] = df_sel["Email"].ffill()
 
     # Chuẩn hóa ngày
     for dcol in ["Ngày Bắt Đầu", "Ngày Kết Thúc"]:
@@ -728,7 +850,41 @@ if df_raw is not None:
     if merge_classes_one_row and all(c in df_out.columns for c in expected):
         # Chỉ khóa theo 4 trường này; các trường khác sẽ gộp giá trị duy nhất
         group_keys = ["Môn Học", "Tên Giảng Viên", "Ngày Bắt Đầu", "Ngày Kết Thúc"]
+        # Override: always group by GV + Môn only (ignore date range)
+        group_keys = ["Môn Học", "Tên Giảng Viên"]
 
+        # Group key resolver prefers display label, then synonyms/fuzzy
+        def _find_col_key(df, target_key: str):
+            disp = TARGET_DISPLAY.get(target_key)
+            if disp and disp in df.columns:
+                return disp
+            norm_map = {_normalize_text(c): c for c in df.columns}
+            candidates = set([target_key]) | set(SYNONYMS.get(target_key, {target_key}))
+            for k in candidates:
+                if k in norm_map:
+                    return norm_map[k]
+            for k in candidates:
+                words = [w for w in k.split() if w]
+                for norm_col, orig_col in norm_map.items():
+                    hay = f" {norm_col} "
+                    if all(f" {w} " in hay for w in words):
+                        return orig_col
+            best = None
+            best_score = 0.0
+            for norm_col, orig_col in norm_map.items():
+                for k in candidates:
+                    score = difflib.SequenceMatcher(None, k, norm_col).ratio()
+                    if score > best_score:
+                        best_score = score
+                        best = orig_col
+            return best if best_score >= 0.6 else None
+
+        # Choose grouping behavior
+        # Always group by Teacher and Email when merge_classes_one_row is checked
+        group_keys = [
+            _find_col_key(df_out, "ten giang vien"),
+            _find_col_key(df_out, "email"),
+        ]
         def join_unique(series: pd.Series) -> str:
             vals = []
             for v in series:
@@ -751,6 +907,13 @@ if df_raw is not None:
             if c in tmp.columns:
                 agg_map[c] = join_unique
 
+        # Ensure Email retained during aggregation
+        if "Email" in tmp.columns:
+            agg_map["Email"] = join_unique
+
+        # Gộp tất cả các cột không thuộc group_keys bằng cách nối giá trị duy nhất
+        agg_map = {c: join_unique for c in tmp.columns if c not in group_keys}
+
         try:
             df_out = (
                 tmp.groupby(group_keys, as_index=False)
@@ -772,8 +935,495 @@ if df_raw is not None:
     st.subheader("Dữ liệu đã trích xuất")
     st.dataframe(df_out, use_container_width=True)
 
+    # --- Gửi email: chọn người nhận bằng checkbox và gửi ---
+    st.subheader("Gửi email")
+    group_send_by_teacher = st.checkbox("Gui gop theo giang vien", value=True, key="group_send_gv")
+
+    # Helper: robustly find column by target key using TARGET_DISPLAY label first, then synonyms + fuzzy
+    def _find_col(df, target_key: str):
+        disp = TARGET_DISPLAY.get(target_key)
+        if disp and disp in df.columns:
+            return disp
+        norm_map = {_normalize_text(c): c for c in df.columns}
+        candidates = set([target_key]) | set(SYNONYMS.get(target_key, {target_key}))
+        # 1) exact normalized match
+        for k in candidates:
+            if k in norm_map:
+                return norm_map[k]
+        # 2) containment by whole words
+        for k in candidates:
+            words = [w for w in k.split() if w]
+            for norm_col, orig_col in norm_map.items():
+                hay = f" {norm_col} "
+                if all(f" {w} " in hay for w in words):
+                    return orig_col
+        # 3) fuzzy
+        best = None
+        best_score = 0.0
+        for norm_col, orig_col in norm_map.items():
+            for k in candidates:
+                score = difflib.SequenceMatcher(None, k, norm_col).ratio()
+                if score > best_score:
+                    best_score = score
+                    best = orig_col
+        if best_score >= 0.6:
+            return best
+        return None
+
+    col_teacher = _find_col(df_out, "ten giang vien")
+    col_email = _find_col(df_out, "email")
+    col_subject = _find_col(df_out, "mon hoc")
+    col_class = _find_col(df_out, "lop")
+
+    # Prepare compact view for selection
+    def _fmt(v):
+        if pd.isna(v):
+            return ""
+        s = str(v)
+        return s
+
+    mail_view = pd.DataFrame({
+        "Tên Giảng Viên": df_out[col_teacher] if col_teacher else pd.Series([None]*len(df_out)),
+        "Email": df_out[col_email] if col_email else pd.Series([None]*len(df_out)),
+        "Môn Học": df_out[col_subject] if col_subject else pd.Series([None]*len(df_out)),
+        "Lớp": df_out[col_class] if col_class else pd.Series([None]*len(df_out)),
+    }) if len(df_out) else pd.DataFrame(columns=["Tên Giảng Viên","Email","Môn Học","Lớp"]) 
+
+    # Action buttons for selection
+    sel_all_col, clear_all_col, send_col = st.columns([1,1,2])
+    if sel_all_col.button("Chọn tất cả"):
+        # mark all as selected in session state
+        for i in range(len(mail_view)):
+            st.session_state[f"mail_sel_{i}"] = True
+    if clear_all_col.button("Bỏ chọn tất cả"):
+        for i in range(len(mail_view)):
+            st.session_state[f"mail_sel_{i}"] = False
+
+    # Render per-row checkboxes
+    selected_indices = []
+    for i in range(len(mail_view)):
+        row = mail_view.iloc[i]
+        label = f"{_fmt(row.get('Tên Giảng Viên'))} | {_fmt(row.get('Email'))} | {_fmt(row.get('Môn Học'))} | {_fmt(row.get('Lớp'))}"
+        if st.checkbox(label, key=f"mail_sel_{i}"):
+            selected_indices.append(i)
+
+    # Gmail OAuth (optional)
+    st.caption("Tùy chọn: dùng Gmail API (OAuth) để gửi mail")
+    gmail_col1, gmail_col2 = st.columns([1,1])
+    use_gmail_api = st.checkbox("Su dung Gmail (OAuth)", value=True, key="use_gmail_api")
+    # Auto-load saved Gmail credentials once per session
+    if use_gmail_api and "gmail_creds" not in st.session_state:
+        try:
+            creds_loaded = _load_gmail_creds_from_file()
+            if creds_loaded:
+                st.session_state["gmail_creds"] = creds_loaded.to_json()
+                try:
+                    from googleapiclient.discovery import build
+                    service = build("gmail", "v1", credentials=creds_loaded)
+                    profile = service.users().getProfile(userId="me").execute()
+                    st.session_state["gmail_addr"] = profile.get("emailAddress")
+                except Exception:
+                    pass
+                st.caption("Loaded saved Gmail connection")
+        except Exception:
+            pass
+    gmail_client_id = st.text_input(
+        "Gmail Client ID",
+        value=_get_secret("GOOGLE_CLIENT_ID", ""),
+        help="Đặt trong .streamlit/secrets.toml hoặc nhập trực tiếp",
+    )
+    gmail_client_secret = st.text_input(
+        "Gmail Client Secret",
+        type="password",
+        value=_get_secret("GOOGLE_CLIENT_SECRET", ""),
+        help="Đặt trong .streamlit/secrets.toml hoặc nhập trực tiếp",
+    )
+    if use_gmail_api and gmail_col1.button("Kết nối Gmail"):
+        try:
+            from google_auth_oauthlib.flow import InstalledAppFlow
+            from google.oauth2.credentials import Credentials
+            from googleapiclient.discovery import build
+            scopes = ["https://www.googleapis.com/auth/gmail.send"]
+            client_config = {
+                "installed": {
+                    "client_id": gmail_client_id,
+                    "client_secret": gmail_client_secret,
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob", "http://localhost"],
+                }
+            }
+            flow = InstalledAppFlow.from_client_config(client_config, scopes=scopes)
+            creds = flow.run_local_server(port=0, prompt="consent")
+            st.session_state["gmail_creds"] = creds.to_json()
+            # Persist for next runs
+            try:
+                _save_gmail_creds_to_file(creds)
+            except Exception:
+                pass
+            try:
+                service = build("gmail", "v1", credentials=creds)
+                profile = service.users().getProfile(userId="me").execute()
+                st.session_state["gmail_addr"] = profile.get("emailAddress")
+            except Exception:
+                pass
+            st.success("Đã kết nối Gmail")
+        except ModuleNotFoundError:
+            st.error("Thiếu thư viện: pip install google-api-python-client google-auth google-auth-oauthlib")
+        except Exception as e:
+            st.error(f"Lỗi kết nối Gmail: {e}")
+    if use_gmail_api and gmail_col2.button("Ngắt kết nối"):
+        st.session_state.pop("gmail_creds", None)
+        st.session_state.pop("gmail_addr", None)
+        try:
+            _clear_gmail_creds_file()
+            st.info("Cleared saved Gmail connection")
+        except Exception:
+            pass
+    if st.session_state.get("gmail_addr"):
+        st.caption(f"Đang dùng: {st.session_state.get('gmail_addr')}")
+
+    # SMTP config in sidebar
+    with st.sidebar:
+        st.subheader("Gửi mail - Cấu hình")
+        mail_subject = st.text_input("Tieu de", value=_get_secret("MAIL_SUBJECT", "Thong bao lich giang"))
+        mail_body = st.text_area(
+            "Noi dung (co the dung {ten_gv}, {mon_hoc}, {lop})",
+            value=_get_secret("MAIL_BODY", "Kinh gui {ten_gv},\n\nThong tin lich giang cua Thay/Co:\n{lich_text}\n\nTran trong."),
+            height=120,
+        )
+
+
+
+        # HTML email template (optional)
+        mail_use_html = st.checkbox("Gui dang HTML", value=True, key="mail_use_html")
+        default_html = ""
+        try:
+            with open(os.path.join("templates", "invite_email.html"), "r", encoding="utf-8") as f:
+                default_html = f.read()
+        except Exception:
+            default_html = (
+                "<html><body><p>Kinh gui {ten_gv},</p>"
+                "<p>Khoa Cong nghe – Truong Cao dang Viet My tran trong moi Thay/Co"
+                " tham gia giang day theo thong tin sau:</p>"
+                "{lich_html}"
+                "<p>Kinh mong Thay/Co sap xep thoi gian tham gia giang day theo ke hoach tren."
+                " Moi thong tin chi tiet, xin vui long lien he Khoa Cong nghe de duoc ho tro.</p>"
+                "</body></html>"
+            )
+        mail_body_html = None
+        if mail_use_html:
+            mail_body_html = st.text_area(
+                "Noi dung HTML (template)", value=default_html, height=260, key="mail_body_html"
+            )
+
+    # Email sending logic
+    # Resolve optional column names for template fields
+    col_bd = _find_col(df_out, "ngay bat dau")
+    col_kt = _find_col(df_out, "ngay ket thuc")
+    col_tgbd = _find_col(df_out, "thoi gian bd")
+    col_tgkt = _find_col(df_out, "thoi gian kt")
+    col_thu2 = _find_col(df_out, "thu")
+    col_room2 = _find_col(df_out, "phong hoc")
+    col_coso2 = _find_col(df_out, "co so hoc")
+
+
+    def _build_varmap(i: int) -> dict:
+        src = df_out.iloc[i]
+        def g(c):
+            return _fmt(src.get(c)) if c else ""
+        now = datetime.now()
+        return {
+            "ten_gv": g(col_teacher),
+            "mon_hoc": g(col_subject),
+            "lop": g(col_class),
+            "ngay_bd": g(col_bd),
+            "ngay_kt": g(col_kt),
+            "tg_bd": g(col_tgbd),
+            "tg_kt": g(col_tgkt),
+            "thu": g(col_thu2),
+            "phong": g(col_room2),
+            "co_so": g(col_coso2),
+            # optional placeholders used by HTML template
+            "ngay_gui": now.strftime("%d/%m/%Y"),
+            "nam": now.strftime("%Y"),
+            "logo_url": _get_secret("LOGO_URL", ""),
+            "confirm_link": _get_secret("CONFIRM_LINK", ""),
+        }
+    # Preview (show first selected row with formatted subject/body)
+    st.subheader("Xem truoc")
+    if selected_indices:
+        idx0 = selected_indices[0]
+        src = df_out.iloc[idx0]
+        varmap_prev = {
+            "ten_gv": _fmt(src.get(col_teacher)) if col_teacher else "",
+            "mon_hoc": _fmt(src.get(col_subject)) if col_subject else "",
+            "lop": _fmt(src.get(col_class)) if col_class else "",
+            "ngay_bd": _fmt(src.get(col_bd)) if col_bd else "",
+            "ngay_kt": _fmt(src.get(col_kt)) if col_kt else "",
+            "tg_bd": _fmt(src.get(col_tgbd)) if col_tgbd else "",
+            "tg_kt": _fmt(src.get(col_tgkt)) if col_tgkt else "",
+            "thu": _fmt(src.get(col_thu2)) if col_thu2 else "",
+            "phong": _fmt(src.get(col_room2)) if col_room2 else "",
+            "co_so": _fmt(src.get(col_coso2)) if col_coso2 else "",
+        }
+        # Add lich_html to varmap_prev for preview
+        txt_table_prev, html_table_prev = _make_tables([idx0]) # Make table for single row
+        varmap_prev["lich_text"] = txt_table_prev
+        varmap_prev["lich_html"] = html_table_prev
+
+        subj_prev = _render_tpl(mail_subject, varmap_prev)
+        text_prev = _render_tpl(mail_body, varmap_prev)
+        html_prev = _render_tpl(mail_body_html, varmap_prev) if 'mail_body_html' in locals() and mail_body_html else None
+        st.text(f"Tieu de: {subj_prev}")
+        st.write("Noi dung (text):")
+        st.code(text_prev or "", language="markdown")
+        if html_prev:
+            st.write("Noi dung (HTML):")
+            st.markdown(html_prev, unsafe_allow_html=True)
+            with st.expander("Xem HTML thô"):
+                st.code(html_prev, language="html")
+    else:
+        st.info("Chon it nhat 1 nguoi nhan de xem preview")
+    def _send_email(to_addr: str, subject: str, body: str, html: str = None) -> tuple[bool, str]:
+        try:
+            from email.message import EmailMessage
+            import smtplib
+            msg = EmailMessage()
+            msg["From"] = mail_from
+            msg["To"] = to_addr
+            msg["Subject"] = subject
+            msg.set_content(body or "")
+            if html:
+                msg.add_alternative(html, subtype="html")
+
+            server = smtplib.SMTP(smtp_host, int(smtp_port))
+            server.starttls()
+            if smtp_user:
+                server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+            server.quit()
+            return True, ""
+        except Exception as e:
+            return False, str(e)
+
+    def _send_email_gmail(to_addr: str, subject: str, body: str, html: str = None) -> tuple[bool, str]:
+        try:
+            import json, base64
+            from email.message import EmailMessage
+            from googleapiclient.discovery import build
+            from google.oauth2.credentials import Credentials
+            from google.auth.transport.requests import Request
+
+            info = st.session_state.get("gmail_creds")
+            if not info:
+                return False, "Chua ket noi Gmail"
+
+            if isinstance(info, str):
+                info_dict = json.loads(info)
+            elif isinstance(info, dict):
+                info_dict = info
+            else:
+                return False, "Thong tin Gmail khong hop le"
+
+            creds = Credentials.from_authorized_user_info(info_dict, scopes=GMAIL_SCOPES)
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                    st.session_state["gmail_creds"] = creds.to_json()
+                    _save_gmail_creds_to_file(creds)
+                except Exception:
+                    pass
+
+            msg = EmailMessage()
+            from_addr = st.session_state.get("gmail_addr") or _get_secret("MAIL_FROM", "")
+            if from_addr:
+                msg["From"] = from_addr
+            msg["To"] = to_addr
+            msg["Subject"] = subject or ""
+            msg.set_content(body or "")
+            if html:
+                msg.add_alternative(html, subtype="html")
+
+            service = build("gmail", "v1", credentials=creds)
+            raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+            service.users().messages().send(userId="me", body={"raw": raw}).execute()
+            return True, ""
+        except Exception as e:
+            return False, str(e)
+
+    # Table builder
+    def _make_tables(idxs):
+        cols = {
+            "mon": _find_col(df_out, "mon hoc"),
+            "lop": _find_col(df_out, "lop"),
+            "thu": _find_col(df_out, "thu"),
+            "tgbd": _find_col(df_out, "thoi gian bd"),
+            "tgkt": _find_col(df_out, "thoi gian kt"),
+            "nbd": _find_col(df_out, "ngay bat dau"),
+            "nkt": _find_col(df_out, "ngay ket thuc"),
+            "phong": _find_col(df_out, "phong hoc"),
+            "coso": _find_col(df_out, "co so hoc"),
+        }
+        lines = ["Mon | Lop | Thu | Gio | Ngay | Phong | Co so"]
+        header_html = "<tr><th>Môn</th><th>Lớp</th><th>Thứ</th><th>Giờ</th><th>Ngày</th><th>Phòng</th><th>Cơ sở</th></tr>"
+        rows_html = []
+        for i in idxs:
+            s = df_out.iloc[i]
+            mon = _fmt(s.get(cols["mon"])) if cols["mon"] else ""
+            lop = _fmt(s.get(cols["lop"])) if cols["lop"] else ""
+            thu = _fmt(s.get(cols["thu"])) if cols["thu"] else ""
+            gio = "{}-{}".format(_fmt(s.get(cols["tgbd"])) if cols["tgbd"] else "", _fmt(s.get(cols["tgkt"])) if cols["tgkt"] else "").strip("-")
+            ngay = "{}→{}".format(_fmt(s.get(cols["nbd"])) if cols["nbd"] else "", _fmt(s.get(cols["nkt"])) if cols["nkt"] else "").strip("→")
+            phong = _fmt(s.get(cols["phong"])) if cols["phong"] else ""
+            coso = _fmt(s.get(cols["coso"])) if cols["coso"] else ""
+            lines.append(" | ".join([mon, lop, thu, gio, ngay, phong, coso]))
+            rows_html.append(f"<tr><td>{mon}</td><td>{lop}</td><td>{thu}</td><td>{gio}</td><td>{ngay}</td><td>{phong}</td><td>{coso}</td></tr>")
+        return "\n".join(lines), f"<table border=1 cellpadding=6 cellspacing=0>{header_html}{''.join(rows_html)}</table>"
+
+    # Send grouped by teacher helper
+    def _send_grouped(selected_indices: list[int]):
+            idxs = g["indices"]
+            if not idxs:
+                continue
+            varmap = _build_varmap(idxs[0])
+            mons, lops = [], []
+            for i in idxs:
+                r = df_out.iloc[i]
+                if col_subject:
+                    v = _fmt(r.get(col_subject))
+                    if v and v not in mons: mons.append(v)
+                if col_class:
+                    v = _fmt(r.get(col_class))
+                    if v and v not in lops: lops.append(v)
+            varmap["mon_hoc"] = ", ".join(mons)
+            varmap["lop"] = ", ".join(lops)
+            txt_table, html_table = _make_tables(idxs)
+            varmap["lich_text"] = txt_table
+            varmap["lich_html"] = html_table
+
+            body_base = _render_tpl(mail_body, varmap)
+            body = body_base + ("\n\n" + txt_table if txt_table else "")
+            html_body = _render_tpl(mail_body_html, varmap) if (mail_use_html and mail_body_html) else None
+            subject_fmt = _render_tpl(mail_subject, varmap)
+
+            to_raw = g["to"]
+            emails = email_regex.findall(to_raw or "")
+            if not emails:
+                fail.append((idxs[0], "Email khong hop le"))
+                continue
+            for addr in emails:
+                ok_one, err = _send_email_gmail(addr, subject_fmt, body, html_body)
+                if ok_one:
+                    ok += 1
+                else:
+                    fail.append((idxs[0], err))
+        return ok, fail
+
+    # Send button
+    if send_col.button("Gửi mail"):
+        if not selected_indices:
+            st.warning("Vui lòng chọn ít nhất 1 người nhận")
+        elif not st.session_state.get("gmail_creds"):
+            st.error("Chua ket noi Gmail")
+        else:
+            ok, fail = 0, []
+            for i in selected_indices:
+                row = mail_view.iloc[i]
+                to = _fmt(row.get("Email"))
+                if not to:
+                    fail.append((i, "Thiếu email"))
+                    continue
+                ten_gv = _fmt(row.get("Tên Giảng Viên"))
+                varmap = _build_varmap(i)
+                body = _render_tpl(mail_body, varmap)
+                html_body = _render_tpl(mail_body_html, varmap) if (mail_use_html and mail_body_html) else None
+                subject_fmt = _render_tpl(mail_subject, varmap)
+                emails = re.findall(r"[^@\s]+@[^@\s]+\.[^@\s]+", to or "")
+                if not emails:
+                    fail.append((i, "Email khong hop le"))
+                    continue
+                for addr in emails:
+                    ok_one, err = _send_email_gmail(addr, subject_fmt, body, html_body)
+                    if ok_one:
+                        ok += 1
+                    else:
+                        fail.append((i, err))
+            if ok:
+                st.success(f"Đã gửi {ok} email thành công")
+            if fail:
+                st.error("Lỗi khi gửi một số email:")
+                for i, err in fail:
+                    st.write(f"- Hàng {i+1}: {err}")
+
     # Xuất dữ liệu
+    # Send grouped per teacher (one email per GV)
+    if st.button("Gui mail (gop theo GV)", key="send_grouped_btn"):
+        if not selected_indices:
+            st.warning("Vui long chon it nhat 1 nguoi nhan")
+        elif not st.session_state.get("gmail_creds"):
+            st.error("Chua ket noi Gmail")
+        else:
+            ok, fail = _send_grouped(selected_indices)
+            if ok:
+                st.success(f"Da gui {ok} email gom theo GV")
+            if fail:
+                st.error("Loi khi gui mot so email:")
+                for i, err in fail:
+                    st.write(f"- Hang {i+1}: {err}")
     st.subheader("Tải xuống")
+    # G?i qua Gmail (OAuth)
+    if send_col.button("G?i mail (Gmail OAuth)", key="gmail_oauth_send"):
+        if not selected_indices:
+            st.warning("Vui l�ng ch?n �t nh?t 1 ngu?i nh?n")
+        elif not st.session_state.get("gmail_creds"):
+            st.error("Chua ket noi Gmail")
+        else:
+            ok, fail = 0, []
+            for i in selected_indices:
+                row = mail_view.iloc[i]
+                to = _fmt(row.get("Email"))
+                if not to:
+                    fail.append((i, "Thi?u email"))
+                    continue
+                # Dung varmap chuan giong Preview
+                varmap = _build_varmap(i)
+                ten_gv = _fmt(row.get("T�n Gi?ng Vi�n"))
+                mon_hoc = _fmt(row.get("M�n H?c"))
+                lop = _fmt(row.get("L?p"))
+                src = df_out.iloc[i]
+                varmap2 = {
+                    "ten_gv": ten_gv,
+                    "mon_hoc": mon_hoc,
+                    "lop": lop,
+                    "ngay_bd": _fmt(src.get(col_bd)) if col_bd else "",
+                    "ngay_kt": _fmt(src.get(col_kt)) if col_kt else "",
+                    "tg_bd": _fmt(src.get(col_tgbd)) if col_tgbd else "",
+                    "tg_kt": _fmt(src.get(col_tgkt)) if col_tgkt else "",
+                    "thu": _fmt(src.get(col_thu2)) if col_thu2 else "",
+                    "phong": _fmt(src.get(col_room2)) if col_room2 else "",
+                    "co_so": _fmt(src.get(col_coso2)) if col_coso2 else "",
+                }
+                body = _render_tpl(mail_body, varmap)
+                html_body = _render_tpl(mail_body_html, varmap) if (mail_use_html and mail_body_html) else None
+                subject_fmt = _render_tpl(mail_subject, varmap)
+                emails = re.findall(r"[^@\s]+@[^@\s]+\.[^@\s]+", to or "")
+                if not emails:
+                    fail.append((i, "Email khong hop le"))
+                    continue
+                for addr in emails:
+                    ok_one, err = _send_email_gmail(addr, subject_fmt, body, html_body)
+                    if ok_one:
+                        ok += 1
+                    else:
+                        fail.append((i, err))
+            if ok:
+                st.success(f"Da g?i {ok} email th�nh c�ng (Gmail)")
+            if fail:
+                st.error("L?i khi g?i m?t s? email:")
+                for i, err in fail:
+                    st.write(f"- H�ng {i+1}: {err}")
+
     csv_data = df_out.to_csv(index=False).encode("utf-8-sig")
     st.download_button(
         "Tải về CSV",
@@ -796,3 +1446,5 @@ if df_raw is not None:
     )
 else:
     st.info("Hãy chọn/tải file và cấu hình ở thanh bên nếu cần.")
+
+

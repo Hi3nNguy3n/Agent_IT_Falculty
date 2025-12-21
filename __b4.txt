@@ -1,0 +1,9 @@
+                ten_gv = _fmt(row.get("T?n Gi?ng Vi?n"))
+                mon_hoc = _fmt(row.get("M?n H?c"))
+                lop = _fmt(row.get("L?p"))
+                src = df_out.iloc[i]\n                varmap = {"ten_gv": ten_gv, "mon_hoc": mon_hoc, "lop": lop, "ngay_bd": _fmt(src.get(col_bd)) if col_bd else "", "ngay_kt": _fmt(src.get(col_kt)) if col_kt else "", "tg_bd": _fmt(src.get(col_tgbd)) if col_tgbd else "", "tg_kt": _fmt(src.get(col_tgkt)) if col_tgkt else "", "thu": _fmt(src.get(col_thu2)) if col_thu2 else "", "phong": _fmt(src.get(col_room2)) if col_room2 else "", "co_so": _fmt(src.get(col_coso2)) if col_coso2 else ""}\n                body = _safe_format(mail_body, varmap)\n                html_body = _safe_format(mail_body_html, varmap) if \u0027mail_body_html\u0027 in locals() and mail_body_html else None
+                emails = re.findall(r"[^@\s]+@[^@\s]+\.[^@\s]+", to)
+                if not emails:
+                    fail.append((i, "Email khong hop le"))
+                    continue
+                for addr in emails:

@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="x-apple-disable-message-reformatting">
+  <title>Thư mời giảng</title>
+  <style>
+    html, body {
+      margin:0;
+      padding:0;
+      width:100%;
+      background:#f6f6f7;
+      font-family:Arial, Helvetica, sans-serif;
+    }
+    table {
+      border-collapse:collapse;
+    }
+    @media (max-width:520px){
+      .container { width:100% !important; }
+      .px { padding-left:16px !important; padding-right:16px !important; }
+      .hide-mobile { display:none !important; }
+    }
+  </style>
+</head>
+
+<body>
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f6f6f7;">
+  <tr>
+    <td align="center" style="padding:24px 12px;">
+
+      <!-- Card -->
+      <table class="container" width="640" cellpadding="0" cellspacing="0"
+             style="background:#ffffff; border-radius:14px; overflow:hidden;
+                    box-shadow:0 6px 18px rgba(0,0,0,0.08);">
+
+        <!-- Accent -->
+        <tr>
+          <td style="background:#8E181B; height:6px;"></td>
+        </tr>
+
+        <!-- Header -->
+        <tr>
+          <td class="px" style="padding:20px 24px 10px 24px;">
+            <div style="font-size:20px; font-weight:700; color:#8E181B;">
+              Thư mời giảng
+            </div>
+            <div style="font-size:13px; color:#6b7280; margin-top:4px;">
+              Khoa Công nghệ – Trường Cao đẳng Việt Mỹ
+            </div>
+          </td>
+        </tr>
+
+        <!-- Divider -->
+        <tr>
+          <td style="padding:0 24px;">
+            <div style="height:1px; background:#ececec;"></div>
+          </td>
+        </tr>
+
+        <!-- Content -->
+        <tr>
+          <td class="px" style="padding:18px 24px; font-size:14px; line-height:1.7; color:#111827;">
+
+            <p style="margin:0 0 10px 0;">
+              Kính gửi <strong>{ten_gv}</strong>,
+            </p>
+
+            <p style="margin:0 0 14px 0;">
+              Khoa Công nghệ – Trường Cao đẳng Việt Mỹ trân trọng mời Thầy/Cô
+              tham gia giảng dạy theo thông tin sau:
+            </p>
+
+            <!-- TABLE thông tin mời giảng (DẠNG CỘT) -->
+            <table width="100%" cellpadding="0" cellspacing="0"
+                   style="border:1px solid #e5e7eb; border-radius:12px; overflow:hidden;">
+
+              <!-- Title -->
+              <tr>
+                <td colspan="5"
+                    style="background:#8E181B; color:#ffffff; padding:12px 14px; font-weight:700;">
+                  Thông tin mời giảng
+                </td>
+              </tr>
+
+              <!-- Header -->
+              <tr style="background:#f3f4f6; font-weight:700; color:#111827;">
+                <td style="padding:10px; border-top:1px solid #e5e7eb;">Môn học</td>
+                <td style="padding:10px; border-top:1px solid #e5e7eb;">Lớp</td>
+                <td style="padding:10px; border-top:1px solid #e5e7eb;">Thời gian</td>
+                <td style="padding:10px; border-top:1px solid #e5e7eb;">Phòng</td>
+                <td style="padding:10px; border-top:1px solid #e5e7eb;">Thời hạn</td>
+              </tr>
+
+              <!-- Môn 1 -->
+              <tr>
+                <td style="padding:10px; border-top:1px solid #e5e7eb;">{mon1_ten}</td>
+                <td style="padding:10px; border-top:1px solid #e5e7eb;">{mon1_lop}</td>
+                <td style="padding:10px; border-top:1px solid #e5e7eb;">{mon1_thoi_gian}</td>
+                <td style="padding:10px; border-top:1px solid #e5e7eb;">{mon1_phong}</td>
+                <td style="padding:10px; border-top:1px solid #e5e7eb;">
+                  {mon1_thoi_han}
+                </td>
+              </tr>
+
+              <!-- Môn 2 -->
+              <tr>
+                <td style="padding:10px; border-top:1px solid #e5e7eb;">{mon2_ten}</td>
+                <td style="padding:10px; border-top:1px solid #e5e7eb;">{mon2_lop}</td>
+                <td style="padding:10px; border-top:1px solid #e5e7eb;">{mon2_thoi_gian}</td>
+                <td style="padding:10px; border-top:1px solid #e5e7eb;">{mon2_phong}</td>
+                <td style="padding:10px; border-top:1px solid #e5e7eb;">
+                  {mon2_thoi_han}
+                </td>
+              </tr>
+
+            </table>
+
+            <p style="margin:14px 0 0 0;">
+              Kính mong Thầy/Cô vui lòng phản hồi trước thời hạn trên để Khoa thuận tiện
+              trong việc sắp xếp kế hoạch giảng dạy.
+            </p>
+
+          </td>
+        </tr>
+
+        <!-- Footer -->
+        <tr>
+          <td class="px" style="padding:16px 24px 22px 24px; background:#fafafa;">
+            <div style="font-size:14px; color:#111827; line-height:1.6;">
+              Trân trọng,<br>
+              <strong>Khoa Công nghệ</strong><br>
+              Trường Cao đẳng Việt Mỹ
+            </div>
+            <div style="font-size:12px; color:#9ca3af; margin-top:8px;">
+              Email này được gửi tự động. Vui lòng phản hồi nếu cần thêm thông tin.
+            </div>
+          </td>
+        </tr>
+
+      </table>
+
+      <div style="font-size:12px; color:#9ca3af; margin-top:10px;">
+        © {nam} Trường Cao đẳng Việt Mỹ
+      </div>
+
+    </td>
+  </tr>
+</table>
+</body>
+</html>

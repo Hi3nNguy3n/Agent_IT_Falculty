@@ -1,0 +1,13 @@
+    gmail_client_id = st.text_input(
+        "Gmail Client ID",
+        value=(st.secrets.get("GOOGLE_CLIENT_ID", "") if hasattr(st, 'secrets') else ""),
+        help="Ð?t trong .streamlit/secrets.toml ho?c nh?p tr?c ti?p",
+    )
+    gmail_client_secret = st.text_input(
+        "Gmail Client Secret",
+        type="password",
+        value=(st.secrets.get("GOOGLE_CLIENT_SECRET", "") if hasattr(st, 'secrets') else ""),
+        help="Ð?t trong .streamlit/secrets.toml ho?c nh?p tr?c ti?p",
+    )
+    if use_gmail_api and gmail_col1.button("K?t n?i Gmail"):
+        try:
