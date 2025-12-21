@@ -657,10 +657,10 @@ if df_raw is not None:
         st.subheader("Xem nhanh tiêu đề và ví dụ")
         header_preview = pd.DataFrame(
             {
-                "Cột # (1-based)": list(range(1, df_raw.shape[1] + 1)),
+                "Cột # (1-based)": [str(x) for x in list(range(1, df_raw.shape[1] + 1))],
                 "Tiêu đề": [str(c) for c in df_raw.columns],
                 "Ví dụ hàng 1": [
-                    df_raw.iloc[0, i] if len(df_raw) > 0 else "" for i in range(df_raw.shape[1])
+                    str(df_raw.iloc[0, i]) if len(df_raw) > 0 else "" for i in range(df_raw.shape[1])
                 ],
             }
         )
@@ -1283,146 +1283,128 @@ if df_raw is not None:
 
     # Send grouped by teacher helper
     def _send_grouped(selected_indices: list[int]):
-            idxs = g["indices"]
+        # Group selected indices by teacher email
+        grouped_by_email = {}
+        for i in selected_indices:
+            row = df_out.iloc[i]
+            email_val = _fmt(row.get(col_email))
+            if email_val:
+                # Use first valid email as group key
+                email_list = re.findall(r"[^@\s]+@[^@\s]+\.[^@\s]+", email_val)
+                if email_list:
+                    group_key = email_list[0].lower()
+                    if group_key not in grouped_by_email:
+                        grouped_by_email[group_key] = {
+                            "indices": [],
+                            "to": email_val,
+                            "name": _fmt(row.get(col_teacher)),
+                        }
+                    grouped_by_email[group_key]["indices"].append(i)
+
+        ok, fail = 0, []
+        email_regex = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
+        for group in grouped_by_email.values():
+            idxs = group["indices"]
             if not idxs:
                 continue
+
             varmap = _build_varmap(idxs[0])
             mons, lops = [], []
             for i in idxs:
                 r = df_out.iloc[i]
                 if col_subject:
                     v = _fmt(r.get(col_subject))
-                    if v and v not in mons: mons.append(v)
+                    if v and v not in mons:
+                        mons.append(v)
                 if col_class:
                     v = _fmt(r.get(col_class))
-                    if v and v not in lops: lops.append(v)
+                    if v and v not in lops:
+                        lops.append(v)
             varmap["mon_hoc"] = ", ".join(mons)
             varmap["lop"] = ", ".join(lops)
             txt_table, html_table = _make_tables(idxs)
             varmap["lich_text"] = txt_table
             varmap["lich_html"] = html_table
 
-            body_base = _render_tpl(mail_body, varmap)
-            body = body_base + ("\n\n" + txt_table if txt_table else "")
-            html_body = _render_tpl(mail_body_html, varmap) if (mail_use_html and mail_body_html) else None
-            subject_fmt = _render_tpl(mail_subject, varmap)
+            body_final = _render_tpl(mail_body, varmap)
+            html_body_final = (
+                _render_tpl(mail_body_html, varmap)
+                if (mail_use_html and mail_body_html)
+                else None
+            )
+            subject_final = _render_tpl(mail_subject, varmap)
 
-            to_raw = g["to"]
+            to_raw = group["to"]
             emails = email_regex.findall(to_raw or "")
             if not emails:
-                fail.append((idxs[0], "Email khong hop le"))
+                fail.append((f"GV: {group['name']}", "Email không hợp lệ"))
                 continue
+
+            for addr in emails:
+                ok_one, err = _send_email_gmail(
+                    addr, subject_final, body_final, html_body_final
+                )
+                if ok_one:
+                    ok += 1
+                else:
+                    fail.append((f"GV: {group['name']} ({addr})", err))
+        return ok, fail
+
+    def _send_individual(selected_indices: list[int]):
+        ok, fail = 0, []
+        for i in selected_indices:
+            row = mail_view.iloc[i]
+            to = _fmt(row.get("Email"))
+            if not to:
+                fail.append((f"Hàng {i+1}", "Thiếu email") )
+                continue
+
+            varmap = _build_varmap(i)
+            body = _render_tpl(mail_body, varmap)
+            html_body = (
+                _render_tpl(mail_body_html, varmap)
+                if (mail_use_html and mail_body_html)
+                else None
+            )
+            subject_fmt = _render_tpl(mail_subject, varmap)
+
+            emails = re.findall(r"[^@\s]+@[^@\s]+\.[^@\s]+", to or "")
+            if not emails:
+                fail.append((f"Hàng {i+1}", "Email không hợp lệ") )
+                continue
+
             for addr in emails:
                 ok_one, err = _send_email_gmail(addr, subject_fmt, body, html_body)
                 if ok_one:
                     ok += 1
                 else:
-                    fail.append((idxs[0], err))
+                    fail.append((f"Hàng {i+1} ({addr})", err))
         return ok, fail
 
     # Send button
-    if send_col.button("Gửi mail"):
+    if send_col.button("Gửi email đã chọn"):
         if not selected_indices:
             st.warning("Vui lòng chọn ít nhất 1 người nhận")
         elif not st.session_state.get("gmail_creds"):
-            st.error("Chua ket noi Gmail")
+            st.error("Chưa kết nối Gmail. Vui lòng kết nối và thử lại.")
         else:
-            ok, fail = 0, []
-            for i in selected_indices:
-                row = mail_view.iloc[i]
-                to = _fmt(row.get("Email"))
-                if not to:
-                    fail.append((i, "Thiếu email"))
-                    continue
-                ten_gv = _fmt(row.get("Tên Giảng Viên"))
-                varmap = _build_varmap(i)
-                body = _render_tpl(mail_body, varmap)
-                html_body = _render_tpl(mail_body_html, varmap) if (mail_use_html and mail_body_html) else None
-                subject_fmt = _render_tpl(mail_subject, varmap)
-                emails = re.findall(r"[^@\s]+@[^@\s]+\.[^@\s]+", to or "")
-                if not emails:
-                    fail.append((i, "Email khong hop le"))
-                    continue
-                for addr in emails:
-                    ok_one, err = _send_email_gmail(addr, subject_fmt, body, html_body)
-                    if ok_one:
-                        ok += 1
-                    else:
-                        fail.append((i, err))
-            if ok:
-                st.success(f"Đã gửi {ok} email thành công")
+            st.info("Đang gửi email...")
+            if group_send_by_teacher:
+                ok, fail = _send_grouped(selected_indices)
+                if ok:
+                    st.success(f"Đã gửi {ok} email (gộp theo giảng viên) thành công.")
+            else:
+                ok, fail = _send_individual(selected_indices)
+                if ok:
+                    st.success(f"Đã gửi {ok} email thành công.")
+
             if fail:
                 st.error("Lỗi khi gửi một số email:")
-                for i, err in fail:
-                    st.write(f"- Hàng {i+1}: {err}")
+                for item, err in fail:
+                    st.write(f"- {item}: {err}")
 
-    # Xuất dữ liệu
-    # Send grouped per teacher (one email per GV)
-    if st.button("Gui mail (gop theo GV)", key="send_grouped_btn"):
-        if not selected_indices:
-            st.warning("Vui long chon it nhat 1 nguoi nhan")
-        elif not st.session_state.get("gmail_creds"):
-            st.error("Chua ket noi Gmail")
-        else:
-            ok, fail = _send_grouped(selected_indices)
-            if ok:
-                st.success(f"Da gui {ok} email gom theo GV")
-            if fail:
-                st.error("Loi khi gui mot so email:")
-                for i, err in fail:
-                    st.write(f"- Hang {i+1}: {err}")
     st.subheader("Tải xuống")
-    # G?i qua Gmail (OAuth)
-    if send_col.button("G?i mail (Gmail OAuth)", key="gmail_oauth_send"):
-        if not selected_indices:
-            st.warning("Vui l�ng ch?n �t nh?t 1 ngu?i nh?n")
-        elif not st.session_state.get("gmail_creds"):
-            st.error("Chua ket noi Gmail")
-        else:
-            ok, fail = 0, []
-            for i in selected_indices:
-                row = mail_view.iloc[i]
-                to = _fmt(row.get("Email"))
-                if not to:
-                    fail.append((i, "Thi?u email"))
-                    continue
-                # Dung varmap chuan giong Preview
-                varmap = _build_varmap(i)
-                ten_gv = _fmt(row.get("T�n Gi?ng Vi�n"))
-                mon_hoc = _fmt(row.get("M�n H?c"))
-                lop = _fmt(row.get("L?p"))
-                src = df_out.iloc[i]
-                varmap2 = {
-                    "ten_gv": ten_gv,
-                    "mon_hoc": mon_hoc,
-                    "lop": lop,
-                    "ngay_bd": _fmt(src.get(col_bd)) if col_bd else "",
-                    "ngay_kt": _fmt(src.get(col_kt)) if col_kt else "",
-                    "tg_bd": _fmt(src.get(col_tgbd)) if col_tgbd else "",
-                    "tg_kt": _fmt(src.get(col_tgkt)) if col_tgkt else "",
-                    "thu": _fmt(src.get(col_thu2)) if col_thu2 else "",
-                    "phong": _fmt(src.get(col_room2)) if col_room2 else "",
-                    "co_so": _fmt(src.get(col_coso2)) if col_coso2 else "",
-                }
-                body = _render_tpl(mail_body, varmap)
-                html_body = _render_tpl(mail_body_html, varmap) if (mail_use_html and mail_body_html) else None
-                subject_fmt = _render_tpl(mail_subject, varmap)
-                emails = re.findall(r"[^@\s]+@[^@\s]+\.[^@\s]+", to or "")
-                if not emails:
-                    fail.append((i, "Email khong hop le"))
-                    continue
-                for addr in emails:
-                    ok_one, err = _send_email_gmail(addr, subject_fmt, body, html_body)
-                    if ok_one:
-                        ok += 1
-                    else:
-                        fail.append((i, err))
-            if ok:
-                st.success(f"Da g?i {ok} email th�nh c�ng (Gmail)")
-            if fail:
-                st.error("L?i khi g?i m?t s? email:")
-                for i, err in fail:
-                    st.write(f"- H�ng {i+1}: {err}")
 
     csv_data = df_out.to_csv(index=False).encode("utf-8-sig")
     st.download_button(
@@ -1446,5 +1428,3 @@ if df_raw is not None:
     )
 else:
     st.info("Hãy chọn/tải file và cấu hình ở thanh bên nếu cần.")
-
-
