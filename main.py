@@ -117,6 +117,12 @@ SYNONYMS = {
         "mon hoc",
         "ten mon",
         "ten mon hoc",
+        "mon",
+        "hoc phan",
+        "ten hoc phan",
+        "mon hoc phan",
+        "mon hp",
+        "ten hp",
         # degraded headers sometimes seen
         "mon ho",
         "on hoc",
@@ -934,6 +940,129 @@ if df_raw is not None:
 
     st.subheader("Dữ liệu đã trích xuất")
     st.dataframe(df_out, use_container_width=True)
+
+    # --- Xem theo giang vien: dropdown + bang mon hoc, tach hang theo ngay ---
+    def _find_col_simple(df, target_key: str):
+        disp = TARGET_DISPLAY.get(target_key)
+        if disp and disp in df.columns:
+            return disp
+        norm_map = {_normalize_text(c): c for c in df.columns}
+        candidates = set([target_key]) | set(SYNONYMS.get(target_key, {target_key}))
+        def _excluded_for_subject(norm_name: str) -> bool:
+            if target_key != "mon hoc":
+                return False
+            bad_tokens = ["lop", "ma lop", "nhom", "nhom lop"]
+            return any(bt in norm_name for bt in bad_tokens)
+        # 1) exact normalized match
+        for k in candidates:
+            if k in norm_map and not _excluded_for_subject(k):
+                return norm_map[k]
+        # 2) containment by whole words
+        for k in candidates:
+            words = [w for w in k.split() if w]
+            for norm_col, orig_col in norm_map.items():
+                hay = f" {norm_col} "
+                if all(f" {w} " in hay for w in words) and not _excluded_for_subject(norm_col):
+                    return orig_col
+        # 3) fuzzy
+        best = None
+        best_score = 0.0
+        for norm_col, orig_col in norm_map.items():
+            for k in candidates:
+                score = difflib.SequenceMatcher(None, k, norm_col).ratio()
+                if score > best_score and not _excluded_for_subject(norm_col):
+                    best_score = score
+                    best = orig_col
+        if best_score >= 0.6:
+            return best
+        return None
+
+    st.subheader("Xem theo giang vien")
+    # Use pre-merge dataframe for accurate per-subject rows
+    try:
+        df_view_src = df_sel.copy()
+    except Exception:
+        df_view_src = df_out.copy()
+    col_teacher = _find_col_simple(df_view_src, "ten giang vien")
+    col_subject = _find_col_simple(df_view_src, "mon hoc")
+    col_class = _find_col_simple(df_view_src, "lop")
+    col_bd = _find_col_simple(df_view_src, "ngay bat dau")
+    col_kt = _find_col_simple(df_view_src, "ngay ket thuc")
+    col_coso = _find_col_simple(df_view_src, "co so hoc")
+    col_room = _find_col_simple(df_view_src, "phong hoc")
+
+    if col_teacher and col_subject:
+        try:
+            teacher_names = [str(x) for x in df_view_src[col_teacher].dropna().unique().tolist() if str(x).strip()]
+            teacher_names = sorted(teacher_names, key=lambda s: s.lower())
+        except Exception:
+            teacher_names = []
+
+        if teacher_names:
+            selected_teacher = st.selectbox("Chon giang vien", options=teacher_names, key="gv_dropdown")
+
+            if selected_teacher:
+                df_gv = df_view_src[df_view_src[col_teacher] == selected_teacher].copy()
+
+                def _join_unique(series: pd.Series) -> str:
+                    vals = []
+                    for v in series:
+                        if pd.isna(v):
+                            continue
+                        s = str(v).strip()
+                        if not s:
+                            continue
+                        parts = [p.strip() for p in s.split(",")]
+                        for p in parts:
+                            if p and p not in vals:
+                                vals.append(p)
+                    return ", ".join(vals)
+
+                group_keys = []
+                if col_subject:
+                    group_keys.append(col_subject)
+
+                agg_map = {}
+                if col_class:
+                    agg_map[col_class] = _join_unique
+                if col_coso:
+                    agg_map[col_coso] = _join_unique
+                if col_room:
+                    agg_map[col_room] = _join_unique
+                if col_bd:
+                    agg_map[col_bd] = _join_unique
+                if col_kt:
+                    agg_map[col_kt] = _join_unique
+
+                try:
+                    df_sum = df_gv.groupby(group_keys, as_index=False).agg(agg_map) if agg_map else df_gv[group_keys].drop_duplicates()
+                except Exception:
+                    df_sum = df_gv[group_keys + list(agg_map.keys())]
+
+                # Rename columns for display
+                rename_map = {}
+                if col_subject:
+                    rename_map[col_subject] = "Mon hoc"
+                if col_class:
+                    rename_map[col_class] = "Lop"
+                if col_bd:
+                    rename_map[col_bd] = "Ngay bat dau"
+                if col_kt:
+                    rename_map[col_kt] = "Ngay ket thuc"
+                if col_coso:
+                    rename_map[col_coso] = "Co so"
+                if col_room:
+                    rename_map[col_room] = "Phong hoc"
+                df_sum = df_sum.rename(columns=rename_map)
+
+                order_cols = [c for c in ["Mon hoc", "Lop", "Ngay bat dau", "Ngay ket thuc", "Co so", "Phong hoc"] if c in df_sum.columns]
+                df_sum = df_sum[order_cols]
+
+                st.dataframe(df_sum, use_container_width=True)
+        else:
+            st.info("Khong tim thay danh sach giang vien")
+    else:
+        st.info("Khong tim thay cot giang vien/mon hoc")
 
     # --- Gửi email: chọn người nhận bằng checkbox và gửi ---
     st.subheader("Gửi email")
