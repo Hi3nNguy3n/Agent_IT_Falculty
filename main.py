@@ -834,12 +834,29 @@ if df_raw is not None:
 
 
     # Xử lý merge: forward fill cho các cột bị merge dòng
-    if "Môn Học" in df_sel.columns:
-        df_sel["Môn Học"] = df_sel["Môn Học"].ffill()
+    # Các cột định danh session (Môn, Ngày, Giờ, Phòng, Cơ sở, Thứ) cần ffill để gộp lớp
+    cols_to_ffill = [
+        "Môn Học", "Ngày Bắt Đầu", "Ngày Kết Thúc", 
+        "Thời Gian BĐ", "Thời gian KT", "Thứ", 
+        "Phòng Học", "Cơ sở học"
+    ]
+    for c in cols_to_ffill:
+        if c in df_sel.columns:
+            df_sel[c] = df_sel[c].ffill()
+
+    # Chỉ ffill Giảng viên/Email nếu Môn Học và các thông tin session chính không thay đổi
     if "Tên Giảng Viên" in df_sel.columns:
-        df_sel["Tên Giảng Viên"] = df_sel["Tên Giảng Viên"].ffill()
-    if "Email" in df_sel.columns:
-        df_sel["Email"] = df_sel["Email"].ffill()
+        # Nhận diện block dựa trên Môn Học và Thứ/Giờ (đảm bảo không tràn sang session khác)
+        id_cols = [c for c in ["Môn Học", "Thứ", "Thời Gian BĐ"] if c in df_sel.columns]
+        if id_cols:
+            groups = (df_sel[id_cols] != df_sel[id_cols].shift()).any(axis=1).cumsum()
+            df_sel["Tên Giảng Viên"] = df_sel.groupby(groups)["Tên Giảng Viên"].ffill()
+            if "Email" in df_sel.columns:
+                df_sel["Email"] = df_sel.groupby(groups)["Email"].ffill()
+        else:
+            df_sel["Tên Giảng Viên"] = df_sel["Tên Giảng Viên"].ffill()
+            if "Email" in df_sel.columns:
+                df_sel["Email"] = df_sel["Email"].ffill()
 
     # Chuẩn hóa ngày
     for dcol in ["Ngày Bắt Đầu", "Ngày Kết Thúc"]:
@@ -855,10 +872,6 @@ if df_raw is not None:
     df_out = df_sel.copy()
     if merge_classes_one_row and all(c in df_out.columns for c in expected):
         # Chỉ khóa theo 4 trường này; các trường khác sẽ gộp giá trị duy nhất
-        group_keys = ["Môn Học", "Tên Giảng Viên", "Ngày Bắt Đầu", "Ngày Kết Thúc"]
-        # Override: always group by GV + Môn only (ignore date range)
-        group_keys = ["Môn Học", "Tên Giảng Viên"]
-
         # Group key resolver prefers display label, then synonyms/fuzzy
         def _find_col_key(df, target_key: str):
             disp = TARGET_DISPLAY.get(target_key)
@@ -885,12 +898,20 @@ if df_raw is not None:
                         best = orig_col
             return best if best_score >= 0.6 else None
 
-        # Choose grouping behavior
-        # Always group by Teacher and Email when merge_classes_one_row is checked
+        # Group by Subject, Teacher, Time, Day, and Date range
         group_keys = [
+            _find_col_key(df_out, "mon hoc"),
             _find_col_key(df_out, "ten giang vien"),
-            _find_col_key(df_out, "email"),
+            _find_col_key(df_out, "thoi gian bd"),
+            _find_col_key(df_out, "thoi gian kt"),
+            _find_col_key(df_out, "ngay bat dau"),
+            _find_col_key(df_out, "ngay ket thuc"),
+            _find_col_key(df_out, "thu"),
         ]
+        # Filter out None and ensure unique keys
+        group_keys = list(dict.fromkeys([k for k in group_keys if k]))
+
+        # (Previously overwritten here, now using the keys defined above)
         def join_unique(series: pd.Series) -> str:
             vals = []
             for v in series:
@@ -906,7 +927,8 @@ if df_raw is not None:
         tmp = df_out.copy()
         for k in group_keys:
             if k in tmp.columns:
-                tmp[k] = tmp[k].fillna("")
+                # Convert to string to avoid mixed-type comparison errors (e.g. int vs time)
+                tmp[k] = tmp[k].fillna("").astype(str).str.strip()
 
         agg_map = {"Lớp": join_unique}
         for c in ["Thời Gian BĐ", "Thời gian KT", "Thứ", "Phòng Học", "Cơ sở học"]:
@@ -990,6 +1012,9 @@ if df_raw is not None:
     col_kt = _find_col_simple(df_view_src, "ngay ket thuc")
     col_coso = _find_col_simple(df_view_src, "co so hoc")
     col_room = _find_col_simple(df_view_src, "phong hoc")
+    col_tgbd = _find_col_simple(df_view_src, "thoi gian bd")
+    col_tgkt = _find_col_simple(df_view_src, "thoi gian kt")
+    col_thu = _find_col_simple(df_view_src, "thu")
 
     if col_teacher and col_subject:
         try:
@@ -1022,17 +1047,24 @@ if df_raw is not None:
                 if col_subject:
                     group_keys.append(col_subject)
 
+                if col_bd:
+                    group_keys.append(col_bd)
+                if col_kt:
+                    group_keys.append(col_kt)
+                if col_coso:
+                    group_keys.append(col_coso)
+                if col_room:
+                    group_keys.append(col_room)
+                if col_tgbd:
+                    group_keys.append(col_tgbd)
+                if col_tgkt:
+                    group_keys.append(col_tgkt)
+                if col_thu:
+                    group_keys.append(col_thu)
+
                 agg_map = {}
                 if col_class:
                     agg_map[col_class] = _join_unique
-                if col_coso:
-                    agg_map[col_coso] = _join_unique
-                if col_room:
-                    agg_map[col_room] = _join_unique
-                if col_bd:
-                    agg_map[col_bd] = _join_unique
-                if col_kt:
-                    agg_map[col_kt] = _join_unique
 
                 try:
                     df_sum = df_gv.groupby(group_keys, as_index=False).agg(agg_map) if agg_map else df_gv[group_keys].drop_duplicates()
