@@ -586,16 +586,16 @@ def _auto_guess_columns(df: pd.DataFrame):
 # -----------------------------
 # Streamlit App
 # -----------------------------
-st.set_page_config(page_title="Đọc TKB HK2 (Mới Giảng)", layout="wide")
-st.title("Đọc file TKB HK2 - Mới Giảng")
+st.set_page_config(page_title="Đọc TKB HK3 (Mới Giảng)", layout="wide")
+st.title("Đọc file TKB HK3 - Mới Giảng")
 st.caption(
-    "Đọc sheet 'TKB_HK2_Moi_Giang' từ file 'file_data.xlsx', lấy các cột yêu cầu."
+    "Đọc sheet 'TKB_HK3_Moi_Giang' từ file 'datanew.xlsx', lấy các cột yêu cầu."
 )
 
 with st.sidebar:
     st.header("Cấu hình")
-    default_path = "file_data.xlsx"
-    sheet_name = st.text_input("Tên sheet", value="TKB_HK2_Moi_Giang")
+    default_path = "datanew.xlsx"
+    sheet_name = st.text_input("Tên sheet", value="TKB_HK3_Moi_Giang")
     header_row_excel = st.number_input(
         "Hàng header (Excel)", min_value=1, value=2, step=1,
         help="Ví dụ: header ở hàng 2 => nhập 2",
@@ -822,6 +822,12 @@ if df_raw is not None:
                 data[disp] = df_raw[src]
 
         df_sel = pd.DataFrame(data)[expected]
+    # Loại bỏ các hàng có phòng là "Tự học"
+    if "Phòng Học" in df_sel.columns:
+        # Chuẩn hóa để so sánh chính xác (tu hoc)
+        mask_tu_hoc = df_sel["Phòng Học"].apply(lambda x: _normalize_text(x) == "tu hoc")
+        df_sel = df_sel[~mask_tu_hoc].reset_index(drop=True)
+
     # Detect if teacher column was merged (blank rows) before ffill
     teacher_was_merged = False
     try:
@@ -1097,6 +1103,60 @@ if df_raw is not None:
         st.info("Khong tim thay cot giang vien/mon hoc")
 
     # --- Gửi email: chọn người nhận bằng checkbox và gửi ---
+
+    # --- Xem theo lớp: dropdown + bảng môn học ---
+    st.subheader("Xem theo lớp")
+    col_class_v = _find_col_simple(df_view_src, "lop")
+    if col_class_v:
+        try:
+            # Lấy danh sách lớp duy nhất (tách từ chuỗi gộp nếu có)
+            all_classes_set = set()
+            for v in df_view_src[col_class_v].dropna():
+                parts = [p.strip() for p in str(v).split(",")]
+                all_classes_set.update(p for p in parts if p)
+            class_list_v = sorted(list(all_classes_set), key=lambda s: s.lower())
+        except Exception:
+            class_list_v = []
+        
+        if class_list_v:
+            selected_classes_v = st.multiselect("Chọn lớp", options=class_list_v, key="class_v_dropdown")
+            if selected_classes_v:
+                # Lọc: dòng nào chứa bất kỳ lớp nào trong selected_classes_v
+                def _filter_class(val):
+                    if pd.isna(val): return False
+                    parts = [p.strip() for p in str(val).split(",")]
+                    return any(c in parts for c in selected_classes_v)
+                
+                df_class_v = df_view_src[df_view_src[col_class_v].apply(_filter_class)].copy()
+                st.dataframe(df_class_v, use_container_width=True)
+                
+                # Nút tải về cho View Lớp
+                cv1, cv2 = st.columns(2)
+                csv_class_data = df_class_v.to_csv(index=False).encode("utf-8-sig")
+                cv1.download_button(
+                    "Tải về CSV (Lớp đã chọn)",
+                    data=csv_class_data,
+                    file_name="tkb_lop_chon.csv",
+                    mime="text/csv",
+                    key="dl_class_csv_v"
+                )
+                
+                buffer_class = io.BytesIO()
+                with pd.ExcelWriter(buffer_class, engine="openpyxl") as writer:
+                    df_class_v.to_excel(writer, index=False, sheet_name="TKB_Lop")
+                cv2.download_button(
+                    "Tải về Excel (Lớp đã chọn)",
+                    data=buffer_class.getvalue(),
+                    file_name="tkb_lop_chon.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_class_xlsx_v"
+                )
+        else:
+            st.info("Không tìm thấy danh sách lớp")
+    else:
+        st.info("Không tìm thấy cột lớp")
+
+    # --- Gửi email ---
     st.subheader("Gửi email")
     group_send_by_teacher = st.checkbox("Gui gop theo giang vien", value=True, key="group_send_gv")
 
@@ -1571,7 +1631,7 @@ if df_raw is not None:
     st.download_button(
         "Tải về CSV",
         data=csv_data,
-        file_name="tkb_hk2_moi_giang.csv",
+        file_name="tkb_hk3_moi_giang.csv",
         mime="text/csv",
     )
 
@@ -1582,10 +1642,49 @@ if df_raw is not None:
     st.download_button(
         "Tải về Excel",
         data=buffer.getvalue(),
-        file_name="tkb_hk2_moi_giang.xlsx",
+        file_name="tkb_hk3_moi_giang.xlsx",
         mime=(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
     )
+
+    st.markdown("---")
+    st.write("### Xuất TKB theo lớp (Tất cả lớp)")
+    if st.button("Tạo file Excel (Mỗi lớp một sheet)", key="btn_export_all_classes"):
+        # Lấy danh sách tất cả các lớp từ dữ liệu đã lọc (df_view_src)
+        all_classes_export = set()
+        col_c_export = _find_col_simple(df_view_src, "lop")
+        if col_c_export:
+            for v in df_view_src[col_c_export].dropna():
+                parts = [p.strip() for p in str(v).split(",")]
+                all_classes_export.update(p for p in parts if p)
+            class_list_export = sorted(list(all_classes_export), key=lambda s: s.lower())
+            
+            if class_list_export:
+                st.info(f"Đang tạo file Excel cho {len(class_list_export)} lớp...")
+                buffer_all_cls = io.BytesIO()
+                with pd.ExcelWriter(buffer_all_cls, engine="openpyxl") as writer:
+                    for cls_name in class_list_export:
+                        def _filter_row(val):
+                            if pd.isna(val): return False
+                            return cls_name in [p.strip() for p in str(val).split(",")]
+                        
+                        df_cls_export = df_view_src[df_view_src[col_c_export].apply(_filter_row)]
+                        # Giới hạn tên sheet tối đa 31 ký tự
+                        sheet_name_cls = str(cls_name)[:31].replace("[", "").replace("]", "").replace("*", "").replace(":", "").replace("?", "").replace("/", "").replace("\\", "")
+                        df_cls_export.to_excel(writer, index=False, sheet_name=sheet_name_cls)
+                
+                st.success("Đã tạo xong!")
+                st.download_button(
+                    f"Tải về Excel ({len(class_list_export)} lớp)",
+                    data=buffer_all_cls.getvalue(),
+                    file_name="tkb_tat_ca_cac_lop.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_all_classes_xlsx"
+                )
+            else:
+                st.warning("Không tìm thấy danh sách lớp để xuất.")
+        else:
+            st.error("Không tìm thấy cột 'Lớp'.")
 else:
     st.info("Hãy chọn/tải file và cấu hình ở thanh bên nếu cần.")

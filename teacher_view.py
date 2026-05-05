@@ -115,14 +115,16 @@ def _join_unique_dates(series: pd.Series) -> str:
     return ", ".join(vals)
 
 
-st.set_page_config(page_title="Mon theo giang vien", layout="wide")
-st.title("Xem mon hoc theo giang vien")
+st.set_page_config(page_title="Xem TKB theo GV/Lớp", layout="wide")
+st.title("Xem thời khóa biểu")
 
 with st.sidebar:
-    default_path = "file_data.xlsx"
-    sheet_name = st.text_input("Ten sheet", value="TKB_HK2_Moi_Giang")
+    default_path = "datanew.xlsx"
+    sheet_name = st.text_input("Ten sheet", value="TKB_HK3_Moi_Giang")
     header_row_excel = st.number_input("Hang header (Excel)", min_value=1, value=2, step=1)
     uploaded = st.file_uploader("Tai len file Excel", type=["xlsx"])
+    
+    view_mode = st.radio("Chế độ xem", options=["Giảng viên", "Lớp"], index=0)
 
 def load_df():
     try:
@@ -140,6 +142,13 @@ def load_df():
 df = load_df()
 if df is not None:
     mapping = _find_column_mapping(df)
+
+    # Loại bỏ các hàng có phòng là "Tự học"
+    col_phong_f = mapping.get("phong hoc")
+    if col_phong_f and col_phong_f in df.columns:
+        mask_tu_hoc = df[col_phong_f].apply(lambda x: _normalize_text(x) == "tu hoc")
+        df = df[~mask_tu_hoc].reset_index(drop=True)
+
     col_gv = mapping.get("ten giang vien")
     col_mon = mapping.get("mon hoc")
     col_lop = mapping.get("lop")
@@ -148,67 +157,134 @@ if df is not None:
     col_coso = mapping.get("co so hoc")
     col_phong = mapping.get("phong hoc")
 
-    if not col_gv or not col_mon:
-        st.warning("Thieu cot 'ten giang vien' hoac 'mon hoc'")
+    if view_mode == "Giảng viên":
+        col_gv = mapping.get("ten giang vien")
+        col_mon = mapping.get("mon hoc")
+        if not col_gv or not col_mon:
+            st.warning("Thieu cot 'ten giang vien' hoac 'mon hoc'")
+        else:
+            # forward fill merged cells
+            for c in [col_gv, col_mon, col_lop, col_bd, col_kt, col_coso, col_phong]:
+                if c in df.columns:
+                    df[c] = df[c].ffill()
+
+            if col_bd in df.columns:
+                df[col_bd] = df[col_bd].map(_fmt_date)
+            if col_kt in df.columns:
+                df[col_kt] = df[col_kt].map(_fmt_date)
+
+            teachers = sorted([str(x) for x in df[col_gv].dropna().unique().tolist() if str(x).strip()], key=lambda s: s.lower())
+            selected = st.selectbox("Chon giang vien", options=teachers)
+            mode = st.radio("Kieu hien thi", options=["Moi mon 1 hang", "Tach theo ngay"], index=0, horizontal=True)
+
+            view = pd.DataFrame()
+            if selected:
+                sub = df[df[col_gv] == selected].copy()
+                split_by_day = (mode == "Tach theo ngay")
+                if split_by_day:
+                    group_keys = [k for k in [col_mon, col_bd, col_kt] if k]
+                else:
+                    group_keys = [k for k in [col_mon] if k]
+                
+                agg_map: Dict[str, callable] = {}
+                for c in [col_lop, col_coso, col_phong]:
+                    if c:
+                        agg_map[c] = _join_unique
+                if not split_by_day:
+                    if col_bd: agg_map[col_bd] = _join_unique_dates
+                    if col_kt: agg_map[col_kt] = _join_unique_dates
+                
+                if agg_map:
+                    view = sub.groupby(group_keys, as_index=False).agg(agg_map)
+                else:
+                    view = sub[group_keys].drop_duplicates()
+
+                rename = {col_mon: "Mon hoc"}
+                if col_lop: rename[col_lop] = "Lop"
+                if col_bd: rename[col_bd] = "Ngay bat dau"
+                if col_kt: rename[col_kt] = "Ngay ket thuc"
+                if col_coso: rename[col_coso] = "Co so"
+                if col_phong: rename[col_phong] = "Phong hoc"
+                view = view.rename(columns=rename)
+                order_cols = [c for c in ["Mon hoc", "Ngay bat dau", "Ngay ket thuc", "Lop", "Co so", "Phong hoc"] if c in view.columns]
+                view = view[order_cols]
+
+            st.subheader(f"Ket qua: {selected}")
+            st.dataframe(view, use_container_width=True)
+
+            if not view.empty:
+                csv_bytes = view.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+                st.download_button(
+                    "Tai ve CSV (theo GV)",
+                    data=csv_bytes,
+                    file_name=f"tkb_gv_{_normalize_text(selected) or 'gv'}.csv",
+                    mime="text/csv",
+                )
     else:
-        # forward fill merged cells for reliable grouping
-        for c in [col_gv, col_mon, col_lop, col_bd, col_kt, col_coso, col_phong]:
-            if c in df.columns:
-                df[c] = df[c].ffill()
+        # View by Class
+        col_lop_v = mapping.get("lop")
+        col_mon_v = mapping.get("mon hoc")
+        if not col_lop_v or not col_mon_v:
+            st.warning("Thieu cot 'lop' hoac 'mon hoc'")
+        else:
+            # forward fill merged cells
+            for c in [col_lop_v, col_mon_v, col_gv, col_bd, col_kt, col_coso, col_phong]:
+                if c and c in df.columns:
+                    df[c] = df[c].ffill()
 
-        # format dates to dd/mm/yyyy strings
-        if col_bd in df.columns:
-            df[col_bd] = df[col_bd].map(_fmt_date)
-        if col_kt in df.columns:
-            df[col_kt] = df[col_kt].map(_fmt_date)
+            if col_bd and col_bd in df.columns:
+                df[col_bd] = df[col_bd].map(_fmt_date)
+            if col_kt and col_kt in df.columns:
+                df[col_kt] = df[col_kt].map(_fmt_date)
 
-        teachers = sorted([str(x) for x in df[col_gv].dropna().unique().tolist() if str(x).strip()], key=lambda s: s.lower())
-        selected = st.selectbox("Chon giang vien", options=teachers)
-        mode = st.radio("Kieu hien thi", options=["Moi mon 1 hang", "Tach theo ngay"], index=0, horizontal=True)
+            # Extract all unique classes
+            all_classes = set()
+            for v in df[col_lop_v].dropna():
+                parts = [p.strip() for p in str(v).split(",")]
+                all_classes.update(p for p in parts if p)
+            class_list = sorted(list(all_classes), key=lambda s: s.lower())
 
-        view = pd.DataFrame()
-        if selected:
-            sub = df[df[col_gv] == selected].copy()
-            split_by_day = (mode == "Tach theo ngay")
-            if split_by_day:
-                group_keys = [k for k in [col_mon, col_bd, col_kt] if k]
-            else:
-                group_keys = [k for k in [col_mon] if k]
-            agg_map: Dict[str, callable] = {}
-            for c in [col_lop, col_coso, col_phong]:
-                if c:
-                    agg_map[c] = _join_unique
-            if not split_by_day:
-                # Summarize dates as unique lists when not splitting by day
-                if col_bd:
-                    agg_map[col_bd] = _join_unique_dates
-                if col_kt:
-                    agg_map[col_kt] = _join_unique_dates
-            if agg_map:
-                view = sub.groupby(group_keys, as_index=False).agg(agg_map)
-            else:
-                view = sub[group_keys].drop_duplicates()
+            selected_class = st.selectbox("Chọn lớp", options=class_list)
+            
+            view = pd.DataFrame()
+            if selected_class:
+                # Filter rows containing this class
+                def _has_class(val):
+                    if pd.isna(val): return False
+                    return selected_class in [p.strip() for p in str(val).split(",")]
+                
+                sub = df[df[col_lop_v].apply(_has_class)].copy()
+                
+                # Group by subject and dates
+                group_keys = [k for k in [col_mon_v, col_bd, col_kt] if k]
+                agg_map: Dict[str, callable] = {}
+                if col_gv: agg_map[col_gv] = _join_unique
+                if col_coso: agg_map[col_coso] = _join_unique
+                if col_phong: agg_map[col_phong] = _join_unique
+                
+                if agg_map:
+                    view = sub.groupby(group_keys, as_index=False).agg(agg_map)
+                else:
+                    view = sub[group_keys].drop_duplicates()
 
-            rename = {}
-            if col_mon: rename[col_mon] = "Mon hoc"
-            if col_lop: rename[col_lop] = "Lop"
-            if col_bd: rename[col_bd] = "Ngay bat dau"
-            if col_kt: rename[col_kt] = "Ngay ket thuc"
-            if col_coso: rename[col_coso] = "Co so"
-            if col_phong: rename[col_phong] = "Phong hoc"
-            view = view.rename(columns=rename)
-            order_cols = [c for c in ["Mon hoc", "Ngay bat dau", "Ngay ket thuc", "Lop", "Co so", "Phong hoc"] if c in view.columns]
-            view = view[order_cols]
+                rename = {col_mon_v: "Mon hoc"}
+                if col_gv: rename[col_gv] = "Giang vien"
+                if col_bd: rename[col_bd] = "Ngay bat dau"
+                if col_kt: rename[col_kt] = "Ngay ket thuc"
+                if col_coso: rename[col_coso] = "Co so"
+                if col_phong: rename[col_phong] = "Phong hoc"
+                view = view.rename(columns=rename)
+                order_cols = [c for c in ["Mon hoc", "Giang vien", "Ngay bat dau", "Ngay ket thuc", "Co so", "Phong hoc"] if c in view.columns]
+                view = view[order_cols]
 
-        st.subheader("Ket qua")
-        st.dataframe(view, use_container_width=True)
+            st.subheader(f"Ket qua: {selected_class}")
+            st.dataframe(view, use_container_width=True)
 
-        # allow CSV export for selected teacher
-        if not view.empty:
-            csv_bytes = view.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-            st.download_button(
-                "Tai ve CSV (theo GV)",
-                data=csv_bytes,
-                file_name=f"mon_hoc_{_normalize_text(selected) or 'gv'}.csv",
-                mime="text/csv",
-            )
+            if not view.empty:
+                csv_bytes = view.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+                st.download_button(
+                    "Tai ve CSV (theo Lớp)",
+                    data=csv_bytes,
+                    file_name=f"tkb_lop_{selected_class}.csv",
+                    mime="text/csv",
+                )

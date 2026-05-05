@@ -290,13 +290,75 @@ def build_subject_summary(df: pd.DataFrame, mapping: Dict[str, Optional[str]]) -
     return out
 
 
+def build_class_summary(df: pd.DataFrame, mapping: Dict[str, Optional[str]]) -> pd.DataFrame:
+    col_lop = mapping.get("lop")
+    if not col_lop:
+        raise ValueError("Khong tim thay cot 'lop' trong file")
+
+    col_mon = mapping.get("mon hoc")
+    col_gv = mapping.get("ten giang vien")
+    col_email = mapping.get("email")
+    col_bd = mapping.get("ngay bat dau")
+    col_kt = mapping.get("ngay ket thuc")
+    col_coso = mapping.get("co so hoc")
+    col_phong = mapping.get("phong hoc")
+
+    tmp = df.copy()
+    # ffill for reliable grouping
+    for c in [col_lop, col_mon, col_gv, col_bd, col_kt, col_coso, col_phong]:
+        if c and c in tmp.columns:
+            tmp[c] = tmp[c].ffill()
+    
+    if col_email and col_email in tmp.columns:
+        tmp[col_email] = tmp[col_email].ffill()
+
+    # Normalize dates
+    if col_bd and col_bd in tmp.columns:
+        tmp[col_bd] = tmp[col_bd].map(_format_date)
+    if col_kt and col_kt in tmp.columns:
+        tmp[col_kt] = tmp[col_kt].map(_format_date)
+
+    # Group keys: Class + Subject + Days + Times
+    group_keys = [k for k in [col_lop, col_mon, col_bd, col_kt, col_coso, col_phong] if k]
+
+    agg_map: Dict[str, callable] = {}
+    if col_gv: agg_map[col_gv] = join_unique
+    if col_email: agg_map[col_email] = join_unique
+
+    for c in agg_map.keys():
+        tmp[c] = tmp[c].fillna("")
+
+    out = (
+        tmp.groupby(group_keys, as_index=False).agg(agg_map)
+        if agg_map else tmp[group_keys].drop_duplicates()
+    )
+
+    # Rename
+    rename_map = {col_lop: "Lop"}
+    if col_mon: rename_map[col_mon] = "Mon hoc"
+    if col_gv: rename_map[col_gv] = "Giang vien"
+    if col_email: rename_map[col_email] = "Email"
+    if col_bd: rename_map[col_bd] = "Ngay bat dau"
+    if col_kt: rename_map[col_kt] = "Ngay ket thuc"
+    if col_coso: rename_map[col_coso] = "Co so"
+    if col_phong: rename_map[col_phong] = "Phong hoc"
+
+    out = out.rename(columns=rename_map)
+    preferred = ["Lop", "Mon hoc", "Giang vien", "Email", "Ngay bat dau", "Ngay ket thuc", "Co so", "Phong hoc"]
+    out = out[[c for c in preferred if c in out.columns]]
+    
+    if "Lop" in out.columns:
+        out = out.sort_values(by=["Lop", "Mon hoc"] if "Mon hoc" in out.columns else ["Lop"]).reset_index(drop=True)
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description="Tao file tong hop tu Excel TKB")
-    parser.add_argument("-i", "--input", default="file_data.xlsx", help="Duong dan file Excel dau vao")
-    parser.add_argument("-s", "--sheet", default="TKB_HK2_Moi_Giang", help="Ten sheet")
+    parser.add_argument("-i", "--input", default="datanew.xlsx", help="Duong dan file Excel dau vao")
+    parser.add_argument("-s", "--sheet", default="TKB_HK3_Moi_Giang", help="Ten sheet")
     parser.add_argument("-H", "--header-row", type=int, default=2, help="Hang header trong Excel (1-based)")
     parser.add_argument("-o", "--output", default="mon_hoc_tach_theo_ngay.csv", help="Duong dan file dau ra (.csv hoac .xlsx)")
-    parser.add_argument("-m", "--mode", choices=["teacher", "subject"], default="subject", help="Kieu tong hop")
+    parser.add_argument("-m", "--mode", choices=["teacher", "subject", "class"], default="subject", help="Kieu tong hop")
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
@@ -307,7 +369,19 @@ def main():
     df = pd.read_excel(args.input, sheet_name=args.sheet, header=header_idx)
 
     mapping = find_column_mapping(df)
-    out = build_subject_summary(df, mapping) if args.mode == "subject" else build_teacher_summary(df, mapping)
+
+    # Loại bỏ các hàng có phòng là "Tự học"
+    col_phong = mapping.get("phong hoc")
+    if col_phong and col_phong in df.columns:
+        mask_tu_hoc = df[col_phong].apply(lambda x: _normalize_text(x) == "tu hoc")
+        df = df[~mask_tu_hoc].reset_index(drop=True)
+
+    if args.mode == "subject":
+        out = build_subject_summary(df, mapping)
+    elif args.mode == "teacher":
+        out = build_teacher_summary(df, mapping)
+    else:
+        out = build_class_summary(df, mapping)
 
     # Write output depending on extension (CSV default)
     ext = os.path.splitext(args.output)[1].lower()
